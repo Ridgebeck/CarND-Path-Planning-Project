@@ -257,13 +257,15 @@ int main() {
             double update_time = 0.02; // one step every 20ms
             double total_time = 1.0; // total time for path is 1s
             int no_steps = int(total_time/update_time); // number of total steps
-            double speed_limit = 49.2; // set speed limit to slightly below 50 mph
+            double speed_limit = 49.5; // set speed limit to slightly below 50 mph
+            double car_speed_m_s = car_speed * 0.44704; // convert car speed from mph to m/s 
             int max_map_points = 181; // maximum amount of map points before it wraps around (back to waypoint 1)
-            double car_detection_distance = 50; // distance in front of car where vehicles are recognized
+            double car_detection_distance = 50; // distance in front of car where vehicles are evaluated
             double safety_distance = 30; // car tries to hold that distance to cars in front of it
             int no_of_lanes = 3; // 0=left, 1=middle, 2=right
             int rightmost_lane = no_of_lanes-1; // 2=right
             int leftmost_lane = 0; // 0=left
+            int car_lane = floor(car_d/4); // current lane the car is driving in
 
             int prev_path_size = previous_path_y.size();
 
@@ -272,54 +274,123 @@ int main() {
             bool obstacle_right = false;
             bool obstacle_left = false;
             double obstacle_speed;
-            double obstacle_distance = car_detection_distance;
-            double lane_change_limit_front = 35;
-            double lane_change_limit_back = 10;
+            double obstacle_front_distance = car_detection_distance;
+            double lane_change_limit_front = car_detection_distance + 5;
+            double obstacle_left_distance = lane_change_limit_front;
+            double obstacle_right_distance = lane_change_limit_front;
+            double lane_change_limit_back = 7.5;
             for (int i=0; i<sensor_fusion.size(); i++)
             {
               // read in car data from sensor fusion data
+              double other_car_id = sensor_fusion[i][0];
+              double other_car_x = sensor_fusion[i][1];
+              double other_car_y = sensor_fusion[i][2];
               double other_car_vx = sensor_fusion[i][3];
               double other_car_vy = sensor_fusion[i][4];
               double other_car_s = sensor_fusion[i][5];
               double other_car_d = sensor_fusion[i][6];
-              double other_car_speed = sqrt(other_car_vx*other_car_vx+other_car_vy*other_car_vy);
-              double distance_to_car = other_car_s - car_s;
-              double other_car_lane = floor(other_car_d/4);
 
-              // currently observed car is in front of our car, is in the same lane, and is the closest one
-              if (distance_to_car > 0 and distance_to_car < car_detection_distance and distance_to_car < obstacle_distance and other_car_lane == lane)
+              // only check cars which are in sensor range (reliable data)
+              if (fabs(other_car_s - car_s) < 75)
               {
-                // set flag, save speed and distance
-                obstacle_front = true;
-                obstacle_speed = other_car_speed * 2.23694;
-                obstacle_distance = distance_to_car;
+              
+                // calculate current direction and speed and define time steps for prediction
+                int t_step_in_sec = 0.5;
+                int no_time_steps = 4;
+                double other_car_theta = atan2(other_car_vy, other_car_vx);
+                double other_car_speed = sqrt(other_car_vx*other_car_vx+other_car_vy*other_car_vy);
+
+                // calculate current data and predict into the future
+                double distance_to_car_s_t[no_time_steps+1];
+                double car_s_t, other_car_x_t, other_car_y_t;
+                int other_car_lane_t[no_time_steps+1];
+
+                // calculate s value and lane number for current position and future time steps
+                for (int i=0; i<=no_time_steps; i++)
+                {
+                  // update position values dependend on time and velocity (assume constant velocity)
+                  car_s_t = car_s + car_speed_m_s * i * t_step_in_sec;
+                  other_car_x_t = other_car_x + other_car_vx * i * t_step_in_sec;
+                  other_car_y_t = other_car_y + other_car_vy * i * t_step_in_sec;
+
+                  // calculate s, d, distance to car in Frenet, and lane number of the car at time step
+                  vector<double> vector_s_d = getFrenet(other_car_x_t, other_car_y_t, other_car_theta, map_waypoints_x, map_waypoints_y);
+                  distance_to_car_s_t[i] = vector_s_d[0] - car_s_t;
+                  other_car_lane_t[i] = floor(vector_s_d[1]/4);
+
+
+
+                  // check if another car is or will be in lane to the left and in critical distance
+                  if (lane != leftmost_lane and other_car_lane_t[i] == lane-1 and vector_s_d[0] > car_s_t-lane_change_limit_back and vector_s_d[0] < car_s_t+car_detection_distance+10)
+                  {
+                      // check if it is the closest obstacle
+                      if (fabs(distance_to_car_s_t[i]) < fabs(obstacle_left_distance))
+                      {
+                        // set flag, save distance
+                        obstacle_left = true;
+                        obstacle_left_distance = distance_to_car_s_t[i];
+                      }
+                  }
+
+                  // check if another car is or will be in lane to the right and in critical distance
+                  if (lane != rightmost_lane and other_car_lane_t[i] == lane+1 and vector_s_d[0] > car_s_t-lane_change_limit_back and vector_s_d[0] < car_s_t+car_detection_distance+10)
+                  {
+                      // check if it is the closest obstacle
+                      if (fabs(distance_to_car_s_t[i]) < fabs(obstacle_right_distance))
+                      {
+                        // set flag, save distance
+                        obstacle_right = true;
+                        obstacle_right_distance = distance_to_car_s_t[i];
+                      }
+                  }
+
+                  // check if another car is or will be in same lane and in front and in detection distance
+                  if (other_car_lane_t[i] == lane and distance_to_car_s_t[i] > 0 and distance_to_car_s_t[i] < car_detection_distance)
+                  {
+                    // if car is currently in same lane and behind us
+                    if (i > 0 and other_car_lane_t[0] == lane and distance_to_car_s_t[0] < 0)
+                    {
+                      cout << "Rear collision warning!!!" << endl;
+                    }
+                    else
+                    {
+                      // check if it is the closest obstacle
+                      if (distance_to_car_s_t[i] < obstacle_front_distance)
+                      {
+                        // set flag, save speed and distance, change lane change limit
+                        obstacle_front = true;
+                        obstacle_speed = other_car_speed * 2.23694; // in mph
+                        obstacle_front_distance = distance_to_car_s_t[i];
+                        lane_change_limit_front = obstacle_front_distance + 5;
+                      }
+                    }
+                  }
+
+
+                }
               }
-
-              // currently observed car is in the lane to the right and in a certain distance (unsafe)
-              if (lane != rightmost_lane and other_car_lane == lane + 1 and car_s-lane_change_limit_back < other_car_s and other_car_s < car_s+lane_change_limit_front)
-              {
-                // set flag
-                obstacle_right = true;
-              }
-
-              // currently observed car is in the lane to the left and in a certain distance (unsafe)
-              if (lane != leftmost_lane and other_car_lane == lane -1 and car_s-lane_change_limit_back < other_car_s and other_car_s < car_s+lane_change_limit_front)
-              {
-                // set flag
-                obstacle_left = true;
-              }
-
-
             }
 
+            // check if the closest left and right obstacles are still further away than the adapted lane change limit
+            if (obstacle_left_distance > car_s+lane_change_limit_front)
+              obstacle_left = false;
+            if (obstacle_right_distance > car_s+lane_change_limit_front)
+              obstacle_right = false;
+
             // calculate error value
-            double distance_weight = 0.4;
+            double distance_weight = 0.8;
             double speed_weight = 1.2;
             double v_error, v_error_diff, delta_t;
 
             // obstacle in current lane detected
             if (obstacle_front == true)
             {
+              // set error based on obstacle speed and distance
+              if (car_lane != lane)
+                v_error = speed_limit-car_speed;
+              else
+                v_error = speed_weight * (obstacle_speed - car_speed) + distance_weight * (obstacle_front_distance - safety_distance);
+
               if (lane == leftmost_lane) // car is in leftmost lane
               {
                 if (obstacle_right == false) // right lane has space
@@ -345,10 +416,6 @@ int main() {
                   lane ++; // change one lane to the right
                 }
               }
-
-
-              v_error = speed_weight * (obstacle_speed - car_speed) + distance_weight * (obstacle_distance - safety_distance);
-              //v_error = speed_limit-car_speed;
             }
             else
             {
@@ -362,9 +429,12 @@ int main() {
             last_v_error = v_error;
 
             // apply PD control
-            double k_p = 0.008;
-            double k_d = 0.006;
-            target_speed += (k_p * v_error + k_d * v_error_diff) * 0.44704; // target speed in m/s
+            double k_p = 0.007;
+            double k_d = 0.003;
+            target_speed += (k_p * v_error + k_d * v_error_diff) * 0.44704; // target speed in mph
+
+            if (target_speed > speed_limit * 0.44704)
+              target_speed = speed_limit * 0.44704; // make sure speed limit is not exceeded
 
             // set the target distance between points to achieve the target speed
             double distance_inc = target_speed/no_steps; 
@@ -373,10 +443,9 @@ int main() {
             vector<double> spline_x, spline_y; // vector for point values
             int spline_length = 3; // fit spline to that many points
             double spline_s = 35;  //set standard distance between those points
-            int car_lane = floor(car_d/4);
+            
             if (car_lane != lane)
             {
-              cout << "lane change" << endl;
               spline_s = 55; // less force to the side
             }
 
