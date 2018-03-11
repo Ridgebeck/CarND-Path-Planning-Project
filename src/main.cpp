@@ -9,10 +9,21 @@
 #include "Eigen-3.3/Eigen/QR"
 #include "json.hpp"
 
+#include "Eigen-3.3/Eigen/Dense"
+#include "spline.h"
+
+
 using namespace std;
 
 // for convenience
 using json = nlohmann::json;
+using Eigen::MatrixXd;
+using Eigen::VectorXd;
+
+// set global variables
+double last_v_error = 0;
+double target_speed = 0;
+int lane = 1; // 0=left, 1=middle, 2=right
 
 // For converting back and forth between radians and degrees.
 constexpr double pi() { return M_PI; }
@@ -242,8 +253,229 @@ int main() {
           	vector<double> next_x_vals;
           	vector<double> next_y_vals;
 
+          	// TODO:
+            double update_time = 0.02; // one step every 20ms
+            double total_time = 1.0; // total time for path is 1s
+            int no_steps = int(total_time/update_time); // number of total steps
+            double speed_limit = 49.2; // set speed limit to slightly below 50 mph
+            int max_map_points = 181; // maximum amount of map points before it wraps around (back to waypoint 1)
+            double car_detection_distance = 50; // distance in front of car where vehicles are recognized
+            double safety_distance = 30; // car tries to hold that distance to cars in front of it
+            int no_of_lanes = 3; // 0=left, 1=middle, 2=right
+            int rightmost_lane = no_of_lanes-1; // 2=right
+            int leftmost_lane = 0; // 0=left
 
-          	// TODO: define a path made up of (x,y) points that the car will visit sequentially every .02 seconds
+            int prev_path_size = previous_path_y.size();
+
+            // look for other cars
+            bool obstacle_front = false;
+            bool obstacle_right = false;
+            bool obstacle_left = false;
+            double obstacle_speed;
+            double obstacle_distance = car_detection_distance;
+            double lane_change_limit_front = 35;
+            double lane_change_limit_back = 10;
+            for (int i=0; i<sensor_fusion.size(); i++)
+            {
+              // read in car data from sensor fusion data
+              double other_car_vx = sensor_fusion[i][3];
+              double other_car_vy = sensor_fusion[i][4];
+              double other_car_s = sensor_fusion[i][5];
+              double other_car_d = sensor_fusion[i][6];
+              double other_car_speed = sqrt(other_car_vx*other_car_vx+other_car_vy*other_car_vy);
+              double distance_to_car = other_car_s - car_s;
+              double other_car_lane = floor(other_car_d/4);
+
+              // currently observed car is in front of our car, is in the same lane, and is the closest one
+              if (distance_to_car > 0 and distance_to_car < car_detection_distance and distance_to_car < obstacle_distance and other_car_lane == lane)
+              {
+                // set flag, save speed and distance
+                obstacle_front = true;
+                obstacle_speed = other_car_speed * 2.23694;
+                obstacle_distance = distance_to_car;
+              }
+
+              // currently observed car is in the lane to the right and in a certain distance (unsafe)
+              if (lane != rightmost_lane and other_car_lane == lane + 1 and car_s-lane_change_limit_back < other_car_s and other_car_s < car_s+lane_change_limit_front)
+              {
+                // set flag
+                obstacle_right = true;
+              }
+
+              // currently observed car is in the lane to the left and in a certain distance (unsafe)
+              if (lane != leftmost_lane and other_car_lane == lane -1 and car_s-lane_change_limit_back < other_car_s and other_car_s < car_s+lane_change_limit_front)
+              {
+                // set flag
+                obstacle_left = true;
+              }
+
+
+            }
+
+            // calculate error value
+            double distance_weight = 0.4;
+            double speed_weight = 1.2;
+            double v_error, v_error_diff, delta_t;
+
+            // obstacle in current lane detected
+            if (obstacle_front == true)
+            {
+              if (lane == leftmost_lane) // car is in leftmost lane
+              {
+                if (obstacle_right == false) // right lane has space
+                {
+                  lane ++; // change one lane to the right
+                }
+              }
+              else if (lane == rightmost_lane) // car is in rightmost lane
+              {
+                if (obstacle_left == false) // left lane has space
+                {
+                  lane --; // change one lane to the left
+                }
+              }
+              else // car is in a middle lane
+              {
+                if (obstacle_left == false) // left lane has space
+                {
+                  lane --; // change one lane to the left
+                }
+                else if (obstacle_right == false) // right lane has space
+                {  
+                  lane ++; // change one lane to the right
+                }
+              }
+
+
+              v_error = speed_weight * (obstacle_speed - car_speed) + distance_weight * (obstacle_distance - safety_distance);
+              //v_error = speed_limit-car_speed;
+            }
+            else
+            {
+              v_error = speed_limit-car_speed;
+            }
+
+            // calculate time difference between last step and current step
+            delta_t = (prev_path_size == 0) ? 0 : ((no_steps-prev_path_size)*update_time);
+            // calculate differential speed error
+            v_error_diff = (delta_t > 0) ? ((v_error-last_v_error)/delta_t) : 0;
+            last_v_error = v_error;
+
+            // apply PD control
+            double k_p = 0.008;
+            double k_d = 0.006;
+            target_speed += (k_p * v_error + k_d * v_error_diff) * 0.44704; // target speed in m/s
+
+            // set the target distance between points to achieve the target speed
+            double distance_inc = target_speed/no_steps; 
+
+            // fit a spline to the next x points with a defined distance between each point
+            vector<double> spline_x, spline_y; // vector for point values
+            int spline_length = 3; // fit spline to that many points
+            double spline_s = 35;  //set standard distance between those points
+            int car_lane = floor(car_d/4);
+            if (car_lane != lane)
+            {
+              cout << "lane change" << endl;
+              spline_s = 55; // less force to the side
+            }
+
+            // variables for the current values of the car or path
+            double current_x, current_y, current_yaw;
+            // previous states of the car
+            double previous_car_x, previous_car_y;
+
+            // if the previous path is almost empty, us the car's position as starting point and the position before to make sure the path is tangent
+            if (prev_path_size < 2)
+            {
+              current_x = car_x;
+              current_y = car_y;
+              current_yaw = deg2rad(car_yaw);
+
+              previous_car_x = car_x - distance_inc * cos(car_yaw);
+              previous_car_y = car_y - distance_inc * sin(car_yaw);
+            }
+            // otherwise use the last elements of the previously generated path
+            else
+            {
+              current_x = previous_path_x[prev_path_size-1];
+              current_y = previous_path_y[prev_path_size-1];
+
+              previous_car_x = previous_path_x[prev_path_size-2];
+              previous_car_y = previous_path_y[prev_path_size-2];
+
+              current_yaw = atan2(current_y - previous_car_y, current_x - previous_car_x); // needed for transformation
+            }
+
+            // save the last two points as the start of the spline
+            spline_x.push_back(previous_car_x);
+            spline_x.push_back(current_x);
+               
+            spline_y.push_back(previous_car_y);
+            spline_y.push_back(current_y);
+
+            // create the other reference points for the spline
+            for (int i=1; i<spline_length+1; i++)
+            {
+              vector<double> spline_x_y = getXY(car_s+spline_s*i, (2+4*lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
+              spline_x.push_back(spline_x_y[0]);
+              spline_y.push_back(spline_x_y[1]);
+            }
+
+            // change (shift) the x-y coordinate system to the car's perspective (helps to avoid multiple splines as space curves)
+            for (int i=0; i < spline_x.size(); i++)
+            {
+              double shift_x = spline_x[i] - current_x;
+              double shift_y = spline_y[i] - current_y;
+
+              double hypotenuse = sqrt(shift_x*shift_x+shift_y*shift_y);
+              double alpha = atan2(shift_y,shift_x);
+              double beta = alpha - current_yaw;
+
+              spline_x[i] = hypotenuse * cos(beta);
+              spline_y[i] = hypotenuse * sin(beta);
+            }
+
+            // create the spline and set the generated points
+            tk::spline s;
+            s.set_points(spline_x, spline_y);
+
+            // load the previous path from last update cycle
+            for (int i=0; i<previous_path_x.size(); i++)
+            {
+              next_x_vals.push_back(previous_path_x[i]);
+              next_y_vals.push_back(previous_path_y[i]);
+            }
+
+            // linearize the spline to devide it into increments
+            double linearize_x = 30;
+            double x_pos, y_pos, x_map, y_map;
+            double linearize_dist = linearize_x / (distance(0, 0, linearize_x, s(linearize_x)) / distance_inc);
+
+            // calculate points on spline from linearization
+            for (int i=1; i<=no_steps-previous_path_x.size(); i++)
+            {
+              x_pos = linearize_dist * i;
+              y_pos = s(x_pos);
+
+              double beta = atan2(y_pos, x_pos);
+              double alpha = beta + current_yaw;
+              double hypotenuse = sqrt(x_pos*x_pos+y_pos*y_pos);
+
+              x_map = current_x + hypotenuse * cos(alpha);
+              y_map = current_y + hypotenuse * sin(alpha);
+
+              // transform back to global coordinate system
+              x_pos = x_pos*cos(current_yaw)-y_pos*sin(current_yaw) + current_x;
+              y_pos = x_pos*sin(current_yaw)+y_pos*cos(current_yaw) + current_y;
+
+
+              // add values to vector
+              next_x_vals.push_back(x_map);
+              next_y_vals.push_back(y_map);
+            }
+
+            // send x and y values to simulator 
           	msgJson["next_x"] = next_x_vals;
           	msgJson["next_y"] = next_y_vals;
 
