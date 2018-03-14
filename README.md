@@ -1,7 +1,57 @@
 # CarND-Path-Planning-Project
 Self-Driving Car Engineer Nanodegree Program
-   
-### Simulator.
+
+### Project Writeup
+Here I describe briefly what the objective of the project was and in a bit more detail how my solution to the problem looks like.
+
+#### File Structure
+The program is written in C++ and interacts with the Udacity Term 3 Simulator via WebSocket. The general structure is as follows:
+* the program receives data from the simulator via WebSocket
+* the program calculates a path based on that data and the map data from another source
+* the program sends the generated path points back to the simulator, which then simulates the driving behavior of the car
+
+The important files are:
+* *main.cpp* contains all of the necessary code for path generation
+* *spline.h* contains additional functions to generate spline curves and is included in main.cpp
+* map data is contained in the folder data in the CSV file *highway_map.csv*
+
+#### General Approach
+* data of the car as well as other cars on the highway (sensor fusion data) is read from the simulator
+* general safety zones in front and to the side of the car are defined
+* closest obstacles in safety zones are saved
+* safety zones to the side are modified based on the obstacle (slower car) in the front of our car
+* car speed is adjsuted based on the speed and distance of teh obstacle in front
+* decision for a lane change is made based on the obstacle data in all safety zones
+* old path data is recognized and the last points of the previous path are taken as the start of the new one
+* a new path is generated based on the decision to keep or switch lanes via a spline curve
+* spline curve gets interpolated based on the target speed of th car
+* old and new path points are combined to one path
+* path points are sent back to the simulator
+
+#### Path Generation in Detail
+
+The decision for the lane change was made on the following logic:
+
+* Is there an obstacle (slower car) in front of the vehicle?
+* Depending on the car's current lane - are the adjacent lanes save for a lane change?
+* If both coditions are true, change the lane. If it is not possible, adjust the speed to follow the car in front in a safe distance.
+
+The path generation was conducted with the help of a spline function in order to smoothen the vehicles path and avoid a jerky motion profile. During my test, I noticed a balancing problem between accurately following the lane in the center and a smooth path between the waypoints. The most important factor was the distance between the spline points - a smaller distance generates a more accurate path, a larger distance a less jerky and smoother one. After a few test rund with different values I decided to go with two different values - 35m holding the lane and 55m during a lane change. That could further be optimized to make it dependend on the speed of the car.
+
+instead of generating a path from scratch every time the algorithm considers the previously generated path points. The spline function takes the last two points from the previously generated path as the starting points. In the very first cycle when no previous path data is available the current car position and a previous position (estimated backwards by current position and current angle of the car).
+
+After that I took the current car position, added the value for distance in s (35 or 55m), combined it with the target lane (as d value) and converted it over to X and Y coordinates with the help of the function **
+
+use cars 
+generate spline
+
+interpolate
+
+
+
+---------------------------------------------------------------------------------------------------------------------
+
+### Simulator
 You can download the Term3 Simulator which contains the Path Planning Project from the [releases tab (https://github.com/udacity/self-driving-car-sim/releases).
 
 ### Goals
