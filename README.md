@@ -18,9 +18,9 @@ The important files are:
 #### General Approach
 * data of the car as well as other cars on the highway (sensor fusion data) is read from the simulator
 * general safety zones in front and to the side of the car are defined
-* closest obstacles in safety zones are saved
+* distance to closest obstacles in safety zones are saved and flag is set (including predicted future states)
 * safety zones to the side are modified based on the obstacle (slower car) in the front of our car
-* car speed is adjsuted based on the speed and distance of teh obstacle in front
+* car speed is adjusted based on the speed and distance of the obstacle in front
 * decision for a lane change is made based on the obstacle data in all safety zones
 * old path data is recognized and the last points of the previous path are taken as the start of the new one
 * a new path is generated based on the decision to keep or switch lanes via a spline curve
@@ -38,16 +38,14 @@ The decision for the lane change was made on the following logic:
 
 The path generation was conducted with the help of a spline function in order to smoothen the vehicles path and avoid a jerky motion profile. During my test, I noticed a balancing problem between accurately following the lane in the center and a smooth path between the waypoints. The most important factor was the distance between the spline points - a smaller distance generates a more accurate path, a larger distance a less jerky and smoother one. After a few test rund with different values I decided to go with two different values - 35m holding the lane and 55m during a lane change. That could further be optimized to make it dependend on the speed of the car.
 
-instead of generating a path from scratch every time the algorithm considers the previously generated path points. The spline function takes the last two points from the previously generated path as the starting points. In the very first cycle when no previous path data is available the current car position and a previous position (estimated backwards by current position and current angle of the car).
+Instead of generating a path from scratch every time the algorithm considers the previously generated path points. The spline function takes the last two points from the previously generated path as the starting points. In the very first cycle when no previous path data is available, the current car position and a previous position (estimated backwards by current position and current angle of the car).
 
-After that I took the current car position, added the value for distance in s (35 or 55m), combined it with the target lane (as d value) and converted it over to X and Y coordinates with the help of the function **
+After that I took the current car position, added the value for distance in s (35 or 55m), combined it with the target lane (as d value) and converted it over to X and Y coordinates with the help of the function *getXY()*. I then applied a simple linearization in order to interpolate the spline. As the car moves to the next point every 20ms, the distance between the points had to be calculated based on the target speed. This was achieved by taking the target speed and divide it by the number of steps (total time divided by update time).
 
-use cars 
-generate spline
+After that the distance between the car and the next point on the spline was taken and divided by the calculated distance to get the number of increments for that distance. The distance on the X axis was then divided by this number to gee a good estimation for the increment distance on the X axis and therefore the interpolated X values on the spline. Based on the amount of previous path points the X and the corresponding Y values were then added to the path and the complete path was given to the simulator to execute the motion.
 
-interpolate
-
-
+#### Performance
+With some tweaking of the parameters for distance, speed, etc. I was able to get the car to drive around the course for over 1 hour consistently. The algorithm could be further optimized to adjust the path during a lane change according to the speed and the distance to the car in front. Furthermore, the car could take the data of the cars in fornt of it into account to evaluate all lanes and target the one with the fastest or no traffic (lowest cost). This is especially noticeable with the current implementation when the car is  on one of the outside lanes and it doesn't consider anything but the adjacent lane or when the car is in the middle lane and has the choice to go either left or right (right now it always changes to the left lane).
 
 ---------------------------------------------------------------------------------------------------------------------
 
