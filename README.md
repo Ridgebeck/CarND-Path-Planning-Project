@@ -47,6 +47,8 @@ After that the distance between the car and the next point on the spline was tak
 #### Performance
 With some tweaking of the parameters for distance, speed, etc. I was able to get the car to drive around the course for over 1 hour consistently. The algorithm could be further optimized to adjust the path during a lane change according to the speed and the distance to the car in front. Furthermore, the car could take the data of the cars in fornt of it into account to evaluate all lanes and target the one with the fastest or no traffic (lowest cost). This is especially noticeable with the current implementation when the car is  on one of the outside lanes and it doesn't consider anything but the adjacent lane or when the car is in the middle lane and has the choice to go either left or right (right now it always changes to the left lane).
 
+![alt performance](1hour_drive.JPG)
+
 ---------------------------------------------------------------------------------------------------------------------
 
 ### Simulator
